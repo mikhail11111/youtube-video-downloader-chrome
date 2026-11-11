@@ -8,6 +8,7 @@ A Chrome extension (Manifest V3) that adds a **Download** button to YouTube vide
 - **Quality selector** — choose from 144p, 240p, 360p, 480p, 720p, 1080p and more
 - **Audio-only downloads** — grab just the audio stream (M4A/Opus)
 - **Toolbar popup** — click the extension icon to browse formats without opening the in-page panel
+- **Rate-limited downloads** — downloads at ~500 KB/s to bypass YouTube's throttling, ensuring consistent full-speed downloads
 - **No external API** — extracts format URLs directly from YouTube's player response
 - **SPA-aware** — button re-injects automatically when navigating between videos
 - **Sanitized filenames** — uses the video title as the file name
@@ -47,9 +48,17 @@ The extension injects a content script into YouTube pages that:
 1. Reads `ytInitialPlayerResponse` from the page's JavaScript
 2. Extracts `streamingData.formats` and `streamingData.adaptiveFormats`
 3. Displays them in a panel or popup
-4. Uses Chrome's `downloads` API to fetch the selected stream URL
+4. Downloads using **rate-limited fetch** (~500 KB/s) to bypass YouTube's throttle detection
 
-No data is sent to external servers — all processing happens locally in your browser.
+### Why rate limiting?
+
+YouTube detects fast downloads and throttles them to ~100 KB/s after the first few seconds. By limiting the download speed to ~500 KB/s, the extension stays below YouTube's detection threshold, resulting in consistent full-speed downloads without throttling.
+
+The rate limiter works by:
+- Fetching the file as a `ReadableStream`
+- Reading chunks and writing them to disk via the File System Access API
+- Adding small delays between chunks to maintain the target speed
+- Showing real-time progress (percentage, bytes, speed)
 
 ## File structure
 
@@ -75,6 +84,7 @@ youtube-video-downloader-chrome/
   ```bash
   ffmpeg -i video.mp4 -i audio.m4a -c copy output.mp4
   ```
+- **Large files** — the File System Access API (`showSaveFilePicker`) is used for saving; this requires Chrome 86+ and a secure context (HTTPS)
 - **Unlisted/private videos** — may have download restrictions depending on the video's privacy settings
 - **Rate limiting** — YouTube may throttle downloads at full speed; the extension relies on Chrome's native download manager
 

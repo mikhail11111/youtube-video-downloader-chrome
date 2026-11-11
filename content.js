@@ -1,8 +1,11 @@
 // YouTube Downloader Extension - Content Script
 // Injected into YouTube pages to add download button
+// Supports rate-limited downloads to bypass YouTube throttling
 
 (function() {
   'use strict';
+
+  const DEFAULT_RATE_LIMIT = 500 * 1024; // 500 KB/s
 
   let panel = null;
   let currentVideoId = null;
@@ -43,11 +46,9 @@
   // Extract player response from page
   function getPlayerResponse() {
     try {
-      // Try to get from ytInitialPlayerResponse
       if (window.ytInitialPlayerResponse) {
         return window.ytInitialPlayerResponse;
       }
-      // Try to find in scripts
       const scripts = document.querySelectorAll('script');
       for (const script of scripts) {
         const text = script.textContent || '';
@@ -64,7 +65,6 @@
     return null;
   }
 
-  // Format bytes to human readable
   function formatBytes(bytes) {
     if (!bytes) return '';
     const sizes = ['B', 'KB', 'MB', 'GB'];
@@ -72,12 +72,93 @@
     return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + sizes[i];
   }
 
-  // Get download URL for a format
-  function getFormatUrl(format) {
-    return format.url || null;
+  function sanitizeFilename(name) {
+    return name.replace(/[<>:"/\\|?*]/g, '_').substring(0, 100);
   }
 
-  // Create format item element
+  function setStatus(message, type) {
+    const status = panel.querySelector('.ytdl-status');
+    status.textContent = message;
+    status.className = 'ytdl-status' + (type ? ' ytdl-' + type : '');
+  }
+
+  // Rate-limited download using fetch + ReadableStream + File System Access API
+  async function rateLimitedDownload(url, filename, rateLimit) {
+    rateLimit = rateLimit || DEFAULT_RATE_LIMIT;
+    try {
+      setStatus('Starting download...', '');
+
+      const response = await fetch(url, {
+        credentials: 'include',
+        headers: {
+          'Referer': 'https://www.youtube.com/',
+          'Origin': 'https://www.youtube.com',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const contentLength = response.headers.get('Content-Length');
+      const totalBytes = contentLength ? parseInt(contentLength) : 0;
+
+      // Ask user where to save (requires user gesture — we have it from click)
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename || 'video.mp4',
+        types: [{
+          description: 'Media file',
+          accept: { 'video/*': ['.mp4', '.webm', '.m4a', '.mp3', '.mkv'] }
+        }]
+      });
+
+      const writable = await handle.createWritable();
+      const reader = response.body.getReader();
+
+      let downloadedBytes = 0;
+      const startTime = Date.now();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        await writable.write(value);
+        downloadedBytes += value.length;
+
+        // Rate limiting: delay to stay below YouTube's throttle threshold
+        const delay = (value.length / rateLimit) * 1000;
+        if (delay > 0) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+
+        // Report progress
+        const progress = totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0;
+        const elapsed = (Date.now() - startTime) / 1000;
+        const speed = elapsed > 0 ? (downloadedBytes / elapsed / 1024).toFixed(0) + ' KB/s' : '';
+        setStatus(`Downloading... ${progress}% (${formatBytes(downloadedBytes)}${totalBytes ? '/' + formatBytes(totalBytes) : ''}) ${speed}`, '');
+      }
+
+      await writable.close();
+
+      setStatus(`Download complete! (${formatBytes(downloadedBytes)})`, 'success');
+      return { success: true, downloaded: downloadedBytes };
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        setStatus('Download cancelled', 'error');
+        return { success: false, error: 'Cancelled' };
+      }
+      if (e.name === 'NotAllowedError') {
+        // User cancelled the save dialog
+        setStatus('Save cancelled', '');
+        return { success: false, error: 'Cancelled' };
+      }
+      setStatus('Download failed: ' + e.message, 'error');
+      console.error('YTDl rate-limited download error:', e);
+      return { success: false, error: e.message };
+    }
+  }
+
   function createFormatItem(format, videoTitle) {
     const item = document.createElement('div');
     item.className = 'ytdl-format-item';
@@ -96,51 +177,22 @@
       <div class="ytdl-format-size">${size}</div>
     `;
 
-    item.addEventListener('click', () => {
-      const url = getFormatUrl(format);
-      if (url) {
-        downloadFile(url, videoTitle, format);
-      } else {
-        setStatus('No download URL available for this format', 'error');
+    item.addEventListener('click', async () => {
+      const url = format.url;
+      if (!url) {
+        setStatus('No download URL available', 'error');
+        return;
       }
+
+      const ext = isVideo ? 'mp4' : (isAudio ? 'm4a' : 'mp4');
+      const filename = sanitizeFilename(videoTitle) + '_' + (quality || 'video') + '.' + ext;
+
+      await rateLimitedDownload(url, filename, DEFAULT_RATE_LIMIT);
     });
 
     return item;
   }
 
-  // Download file using Chrome downloads API
-  function downloadFile(url, title, format) {
-    setStatus('Starting download...', '');
-    chrome.runtime.sendMessage({
-      action: 'download',
-      url: url,
-      filename: sanitizeFilename(title) + '_' + (format.qualityLabel || format.quality || 'video') + '.mp4',
-      headers: {
-        'Referer': 'https://www.youtube.com/',
-        'Origin': 'https://www.youtube.com'
-      }
-    }, (response) => {
-      if (response && response.success) {
-        setStatus('Download started!', 'success');
-      } else {
-        setStatus('Download failed: ' + (response ? response.error : 'Unknown error'), 'error');
-      }
-    });
-  }
-
-  // Sanitize filename
-  function sanitizeFilename(name) {
-    return name.replace(/[<>:"/\\|?*]/g, '_').substring(0, 100);
-  }
-
-  // Set status message
-  function setStatus(message, type) {
-    const status = panel.querySelector('.ytdl-status');
-    status.textContent = message;
-    status.className = 'ytdl-status' + (type ? ' ytdl-' + type : '');
-  }
-
-  // Show formats in panel
   function showFormats(formats, videoTitle) {
     const body = panel.querySelector('.ytdl-panel-body');
     body.innerHTML = '';
@@ -150,12 +202,9 @@
       return;
     }
 
-    // Sort: video formats first (by quality desc), then audio
     const videoFormats = formats.filter(f => f.mimeType && f.mimeType.includes('video'));
     const audioFormats = formats.filter(f => f.mimeType && f.mimeType.includes('audio') && !f.mimeType.includes('video'));
-    const otherFormats = formats.filter(f => !f.mimeType || (!f.mimeType.includes('video') && !f.mimeType.includes('audio')));
 
-    // Deduplicate video formats by quality
     const seenQualities = new Set();
     const uniqueVideo = [];
     for (const f of videoFormats) {
@@ -166,7 +215,6 @@
       }
     }
 
-    // Sort video by resolution (higher first)
     uniqueVideo.sort((a, b) => {
       const getRes = (f) => {
         const m = (f.qualityLabel || '').match(/(\d+)/);
@@ -175,13 +223,12 @@
       return getRes(b) - getRes(a);
     });
 
-    // Sort audio by bitrate (higher first)
     audioFormats.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
 
     if (uniqueVideo.length > 0) {
       const header = document.createElement('div');
       header.style.cssText = 'font-size:12px;font-weight:600;color:#888;margin-bottom:8px;text-transform:uppercase;';
-      header.textContent = 'Video Formats';
+      header.textContent = 'Video Formats (rate-limited)';
       body.appendChild(header);
       for (const f of uniqueVideo) {
         body.appendChild(createFormatItem(f, videoTitle));
@@ -198,14 +245,11 @@
       }
     }
 
-    if (uniqueVideo.length === 0 && audioFormats.length === 0 && otherFormats.length > 0) {
-      for (const f of otherFormats) {
-        body.appendChild(createFormatItem(f, videoTitle));
-      }
+    if (uniqueVideo.length === 0 && audioFormats.length === 0) {
+      body.innerHTML = '<div class="ytdl-error">No downloadable formats found. YouTube may be using SABR streaming.</div>';
     }
   }
 
-  // Load formats for current video
   function loadFormats() {
     const videoId = getVideoId();
     if (!videoId) {
@@ -214,14 +258,13 @@
     }
 
     if (videoId === currentVideoId && panel.querySelector('.ytdl-format-item')) {
-      return; // Already loaded
+      return;
     }
     currentVideoId = videoId;
 
     const body = panel.querySelector('.ytdl-panel-body');
     body.innerHTML = '<div class="ytdl-loading"><div class="ytdl-spinner"></div><div>Loading formats...</div></div>';
 
-    // Get player response from page
     const playerResponse = getPlayerResponse();
     if (playerResponse && playerResponse.streamingData) {
       const formats = [
@@ -233,7 +276,7 @@
       return;
     }
 
-    // Fallback: ask background script to fetch
+    // Fallback: fetch from background
     chrome.runtime.sendMessage({ action: 'getFormats', videoId: videoId }, (response) => {
       if (response && response.success) {
         showFormats(response.formats, response.title);
@@ -244,13 +287,10 @@
     });
   }
 
-  // Add download button to YouTube page
   function addDownloadButton() {
-    // Remove existing button
     const existing = document.querySelector('.ytdl-download-btn');
     if (existing) existing.remove();
 
-    // Find the subscribe button or action buttons area
     const actionsContainer = document.querySelector('#top-row #actions, #menu-container, ytd-video-primary-info-renderer #top-row');
     if (!actionsContainer) return;
 
@@ -268,7 +308,6 @@
       }
     });
 
-    // Insert before the menu or at the end of actions
     const menu = actionsContainer.querySelector('#menu, ytd-menu-renderer');
     if (menu) {
       actionsContainer.insertBefore(btn, menu);
@@ -277,7 +316,6 @@
     }
   }
 
-  // Observe page changes (YouTube is SPA)
   function observePage() {
     const observer = new MutationObserver(() => {
       if (getVideoId() && !document.querySelector('.ytdl-download-btn')) {
@@ -287,7 +325,6 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  // Initialize
   function init() {
     createPanel();
     if (getVideoId()) {
@@ -296,7 +333,6 @@
     observePage();
   }
 
-  // Wait for page to be ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {
