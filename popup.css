@@ -1,0 +1,134 @@
+/* YouTube Downloader - Popup Styles */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 360px;
+  min-height: 200px;
+  font-family: "Segoe UI", "Roboto", "Arial", sans-serif;
+  background: #f9f9f9;
+  color: #333;
+}
+
+.popup-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.popup-header {
+  background: #ff0000;
+  color: white;
+  padding: 14px 16px;
+}
+
+.popup-header h1 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.popup-body {
+  padding: 16px;
+}
+
+.status {
+  text-align: center;
+  color: #666;
+  font-size: 14px;
+  padding: 20px 0;
+}
+
+.video-info {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.video-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  padding: 8px 0;
+  border-bottom: 1px solid #e0e0e0;
+  word-break: break-word;
+}
+
+.formats-section h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.format-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-size: 13px;
+}
+
+.format-btn:hover {
+  background: #fff0f0;
+  border-color: #ff0000;
+}
+
+.format-label {
+  font-weight: 500;
+  color: #333;
+}
+
+.format-type {
+  font-size: 11px;
+  color: #ff0000;
+  font-weight: 600;
+}
+
+.format-size {
+  font-size: 12px;
+  color: #888;
+}
+
+.loading {
+  text-align: center;
+  padding: 30px 0;
+}
+
+.spinner {
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #ff0000;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 12px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.error-msg {
+  color: #d32f2f;
+  font-size: 13px;
+  text-align: center;
+  padding: 10px;
+}
+
+.success-msg {
+  color: #388e3c;
+  font-size: 13px;
+  text-align: center;
+  padding: 10px;
+}

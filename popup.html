@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>YouTube Downloader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <div class="popup-header">
+      <h1>YouTube Downloader</h1>
+    </div>
+    <div class="popup-body">
+      <div id="status" class="status">Navigate to a YouTube video page</div>
+      <div id="video-info" class="video-info" style="display:none;">
+        <div class="video-title" id="video-title"></div>
+        <div class="formats-section">
+          <h3>Video Formats</h3>
+          <div id="video-formats"></div>
+        </div>
+        <div class="formats-section">
+          <h3>Audio Formats</h3>
+          <div id="audio-formats"></div>
+        </div>
+      </div>
+      <div id="loading" class="loading" style="display:none;">
+        <div class="spinner"></div>
+        <div>Loading formats...</div>
+      </div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
