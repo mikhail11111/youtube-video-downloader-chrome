@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Video Downloader",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "description": "Download videos and audio from YouTube and other sites (MP4, WebM, HLS, DASH)",
   "permissions": [
     "activeTab",
@@ -18,6 +18,9 @@
   },
   "sandbox": {
     "pages": ["sandbox.html"]
+  },
+  "content_security_policy": {
+    "sandbox": "sandbox allow-scripts allow-forms allow-popups allow-modals; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: https://unpkg.com; worker-src 'self' blob:; child-src 'self';"
   },
   "content_scripts": [
     {

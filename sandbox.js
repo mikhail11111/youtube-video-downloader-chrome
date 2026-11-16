@@ -9,6 +9,7 @@ const CHUNK_SIZE = 3 * 1024 * 1024; // stay well under the messaging limit
 let ffmpeg = null;
 let loading = null;
 const jobs = new Map(); // jobId -> {video: [], audio: [], videoExt, audioExt}
+const startedJobs = new Set(); // run is idempotent even after the job is consumed
 
 function post(payload) {
   parent.postMessage({ type: 'event', payload: payload }, '*');
@@ -34,6 +35,9 @@ function ensureLoaded(jobId) {
   if (ffmpeg) return Promise.resolve();
   if (!loading) {
     loading = (async () => {
+      if (typeof FFmpegWASM === 'undefined' || !FFmpegWASM.FFmpeg) {
+        throw new Error('ffmpeg.wasm library failed to load from CDN (check internet connection)');
+      }
       post({ jobId: jobId, event: 'status', message: 'Loading merger (~31 MB, once)...' });
       const f = new FFmpegWASM.FFmpeg();
       await f.load({
@@ -86,14 +90,25 @@ async function runJob(jobId) {
 
 window.addEventListener('message', (e) => {
   const m = e.data || {};
+  if (m.type === 'init') {
+    parent.postMessage({ type: 'ready' }, '*');
+    return;
+  }
   if (m.type === 'chunk') {
+    if (startedJobs.has(m.jobId)) return;
     let job = jobs.get(m.jobId);
     if (!job) {
-      job = { video: [], audio: [], videoExt: 'mp4', audioExt: 'm4a' };
+      job = { video: [], audio: [], videoExt: 'mp4', audioExt: 'm4a', seen: new Set() };
       jobs.set(m.jobId, job);
     }
+    // Delivery is retried upstream; drop duplicate chunks by index
+    const key = m.part + ':' + m.index;
+    if (job.seen.has(key)) return;
+    job.seen.add(key);
     job[m.part === 'audio' ? 'audio' : 'video'].push(YTDl.base64ToBytes(m.data));
   } else if (m.type === 'run') {
+    if (startedJobs.has(m.jobId)) return;
+    startedJobs.add(m.jobId);
     const job = jobs.get(m.jobId);
     if (job) {
       job.videoExt = m.videoExt || 'mp4';

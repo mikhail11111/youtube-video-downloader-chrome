@@ -14,10 +14,18 @@ function postToSandbox(msg) {
   }
 }
 
+// The iframe may post 'ready' before this listener exists, so keep pinging
+// until the sandbox answers; it replies 'ready' to every 'init'.
+const initTimer = setInterval(() => {
+  if (sandboxReady) { clearInterval(initTimer); return; }
+  try { frame.contentWindow.postMessage({ type: 'init' }, '*'); } catch (_) {}
+}, 250);
+
 window.addEventListener('message', (e) => {
   const m = e.data || {};
   if (m.type === 'ready') {
     sandboxReady = true;
+    clearInterval(initTimer);
     while (pending.length) frame.contentWindow.postMessage(pending.shift(), '*');
   } else if (m.type === 'event') {
     // Forward merge progress/result chunks to the background, which routes
@@ -28,7 +36,7 @@ window.addEventListener('message', (e) => {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'mergeChunk') {
-    postToSandbox({ type: 'chunk', jobId: request.jobId, part: request.part, data: request.data });
+    postToSandbox({ type: 'chunk', jobId: request.jobId, part: request.part, index: request.index, data: request.data });
     sendResponse({ ok: true });
     return false;
   }

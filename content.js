@@ -178,7 +178,7 @@
             const bytes = part === 'video' ? videoBytes : audioBytes;
             for (let i = 0; i < bytes.length; i += MERGE_CHUNK) {
               const resp = await sendMessage({
-                action: 'mergeChunk', jobId: jobId, part: part,
+                action: 'mergeChunk', jobId: jobId, part: part, index: i / MERGE_CHUNK,
                 data: YTDl.bytesToBase64(bytes.subarray(i, i + MERGE_CHUNK))
               });
               if (resp && resp.success === false) throw new Error(resp.error);

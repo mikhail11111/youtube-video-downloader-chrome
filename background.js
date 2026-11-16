@@ -153,13 +153,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   if (request.action === 'mergeChunk' || request.action === 'mergeRun') {
     const tabId = sender.tab && sender.tab.id;
-    ensureOffscreen().then(() => {
-      if (request.action === 'mergeRun' && tabId != null) mergeJobs.set(request.jobId, tabId);
-      chrome.runtime.sendMessage(request, resp => {
-        void chrome.runtime.lastError;
-        sendResponse(resp || { ok: true });
-      });
-    }).catch(err => sendResponse({ success: false, error: err.message }));
+    if (request.action === 'mergeRun' && tabId != null) mergeJobs.set(request.jobId, tabId);
+    ensureOffscreen()
+      .then(() => forwardToOffscreen(request))
+      .then(resp => sendResponse(resp))
+      .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
   if (request.action === 'mergeEvent') {
@@ -188,6 +186,23 @@ async function ensureOffscreen() {
     }).catch(() => {}).finally(() => { offscreenCreating = null; });
   }
   await offscreenCreating;
+}
+
+// createDocument() resolves before offscreen.js registers its listener, so
+// retry until the offscreen document actually acknowledges the message.
+// Chunks/run are idempotent on the sandbox side, making retries safe.
+async function forwardToOffscreen(message, attempts = 40) {
+  for (let i = 0; i < attempts; i++) {
+    const resp = await new Promise(resolve => {
+      chrome.runtime.sendMessage(message, r => {
+        if (chrome.runtime.lastError) resolve(null);
+        else resolve(r);
+      });
+    });
+    if (resp && resp.ok) return resp;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  throw new Error('Merger is not reachable. Reload the extension and try again.');
 }
 
 // ---------------- YouTube InnerTube ----------------
