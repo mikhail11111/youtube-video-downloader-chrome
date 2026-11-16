@@ -49,12 +49,12 @@ A Chrome extension (Manifest V3) that detects and downloads videos and audio fro
    - Scans `<video>`/`<audio>` elements for direct sources
    - Top frame: runs the download panel and the actual download (File System Access API), so it survives popup closure
 3. **Stream engine** (`stream.js`)
-   - HLS: master playlist variant selection, media playlist parsing, AES-128 key handling, init + segment concatenation
+   - HLS: master playlist variant selection, media playlist parsing, AES-128 key handling, byte-range segments (coalesced Range requests), init + segment concatenation
    - DASH: MPD parsing, best-track selection, segment URL generation, init + segment concatenation
 4. **Popup** — lists detected media (or YouTube formats) and delegates downloads to the content script
 5. **Merger** (`offscreen.html` + `sandbox.html`)
-   - An offscreen document hosts a sandboxed iframe (the only MV3 context allowed to load remote scripts) running ffmpeg.wasm from a CDN
-   - Tracks are transferred in 3 MB chunks, merged with `-c copy` (no re-encoding), and the single MP4 is streamed back to the page for saving
+   - An offscreen document hosts a sandboxed iframe (the only MV3 context allowed to load remote scripts) running ffmpeg-core from a CDN **directly in the page** — no wrapper/worker, which hang silently in sandboxed contexts
+   - The ~31 MB core downloads with progress reporting and a timeout; tracks are transferred in 3 MB chunks, merged with `-c copy` (no re-encoding), and the single MP4 is streamed back to the page for saving
 
 Each saved file starts with an in-page click, because the save dialog (`showSaveFilePicker`) requires a user gesture in the page itself.
 
@@ -69,8 +69,8 @@ Each saved file starts with an in-page click, because the save dialog (`showSave
 ├── background.js       # Service worker: sniffing, InnerTube, CORS proxy, merge routing
 ├── offscreen.html      # Offscreen document hosting the merger iframe
 ├── offscreen.js        # Message bridge: extension <-> sandbox
-├── sandbox.html        # Sandboxed page (allows ffmpeg.wasm from CDN)
-├── sandbox.js          # ffmpeg.wasm merge worker
+├── sandbox.html        # Sandboxed page (allows ffmpeg-core from CDN)
+├── sandbox.js          # ffmpeg-core merge engine (direct, no worker)
 ├── popup.html          # Toolbar popup UI
 ├── popup.js            # Popup logic
 ├── popup.css           # Popup styling
@@ -80,7 +80,7 @@ Each saved file starts with an in-page click, because the save dialog (`showSave
 ## Limitations
 
 - **No transcoding** — the extension picks H.264 sources when available but cannot re-encode other codecs; if a site only offers VP9/AV1/H.265, that is what gets saved (labeled in the UI). Convert afterwards with `ffmpeg -i in.webm -c:v libx264 -crf 23 -c:a aac out.mp4`
-- **First merge needs internet** — ffmpeg.wasm (~31 MB) is loaded once from unpkg.com when the first merge runs; it stays cached for the browser session. Very large videos are held in memory during merging
+- **First merge needs internet** — the ffmpeg core (~31 MB) is loaded from unpkg.com when the first merge runs, with progress and a 3-minute timeout. Very large videos are held in memory during merging
 - **DRM** — Widevine/PlayReady/FairPlay-protected streams (Netflix, Spotify, etc.) cannot be downloaded; they are reported as unsupported
 - **MSE/blob players** — sites that hide the stream behind `blob:` URLs are covered only if the underlying segments/manifests are visible in network traffic; press play first
 - **TS output** — muxed HLS streams with MPEG-TS segments are saved as `.ts` (playable in VLC etc.); remux with `ffmpeg -i in.ts -c copy out.mp4` if needed

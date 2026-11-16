@@ -99,9 +99,18 @@ const YTStream = (() => {
   function parseMediaPlaylist(text, baseUrl) {
     const segments = [];
     let initUrl = null;
+    let initRange = null;
     let key = null;
     let mediaSequence = 0;
     let pendingDuration = 0;
+    let pendingRange = null;
+    let lastEnd = 0;
+    let lastUrl = null;
+    const parseRange = (v, fallbackOffset) => {
+      const m = /^(\d+)(?:@(\d+))?$/.exec((v || '').trim());
+      if (!m) return null;
+      return { length: parseInt(m[1]), offset: m[2] != null ? parseInt(m[2]) : fallbackOffset };
+    };
     for (const raw of text.split(/\r?\n/)) {
       const line = raw.trim();
       if (!line) continue;
@@ -109,7 +118,12 @@ const YTStream = (() => {
         mediaSequence = parseInt(line.split(':')[1]) || 0;
       } else if (line.startsWith('#EXT-X-MAP:')) {
         const attrs = parseAttributes(line.slice('#EXT-X-MAP:'.length));
-        if (attrs.URI) initUrl = absUrl(baseUrl, attrs.URI);
+        if (attrs.URI) {
+          initUrl = absUrl(baseUrl, attrs.URI);
+          initRange = parseRange(attrs.BYTERANGE, 0);
+        }
+      } else if (line.startsWith('#EXT-X-BYTERANGE:')) {
+        pendingRange = line.slice('#EXT-X-BYTERANGE:'.length);
       } else if (line.startsWith('#EXT-X-KEY:')) {
         const attrs = parseAttributes(line.slice('#EXT-X-KEY:'.length));
         key = attrs.METHOD === 'NONE' ? null : {
@@ -120,11 +134,17 @@ const YTStream = (() => {
       } else if (line.startsWith('#EXTINF:')) {
         pendingDuration = parseFloat(line.slice('#EXTINF:'.length)) || 0;
       } else if (!line.startsWith('#')) {
-        segments.push({ url: absUrl(baseUrl, line), duration: pendingDuration, key: key });
+        const url = absUrl(baseUrl, line);
+        // Omitted @offset continues right after the previous range of the same file
+        const fallback = url === lastUrl ? lastEnd : 0;
+        const range = parseRange(pendingRange, fallback);
+        segments.push({ url: url, duration: pendingDuration, key: key, range: range });
+        if (range) { lastEnd = range.offset + range.length; lastUrl = url; }
         pendingDuration = 0;
+        pendingRange = null;
       }
     }
-    return { segments: segments, initUrl: initUrl, mediaSequence: mediaSequence };
+    return { segments: segments, initUrl: initUrl, initRange: initRange, mediaSequence: mediaSequence };
   }
 
   const hlsKeyCache = new Map();
@@ -152,23 +172,62 @@ const YTStream = (() => {
     return new Uint8Array(plain);
   }
 
+  // Byte-range playlists (one big file per track) are fetched in coalesced
+  // ~8 MiB Range requests instead of one request per tiny segment
+  const RANGE_BATCH = 8 * 1024 * 1024;
+
+  function rangeHeaders(range) {
+    return range ? { Range: `bytes=${range.offset}-${range.offset + range.length - 1}` } : undefined;
+  }
+
   // Write init + all segments of a parsed media playlist; returns byte count
   async function writeSegments(parsed, writable, opts) {
     const { signal, onStatus } = opts;
     let bytes = 0;
     if (parsed.initUrl) {
-      const init = await YTDl.fetchBytes(parsed.initUrl, signal);
+      const init = await YTDl.fetchBytes(parsed.initUrl, signal, rangeHeaders(parsed.initRange));
       await writable.write(init);
       bytes += init.length;
     }
-    for (let i = 0; i < parsed.segments.length; i++) {
+    let i = 0;
+    while (i < parsed.segments.length) {
       checkAbort(signal);
       const seg = parsed.segments[i];
-      let data = await YTDl.fetchBytes(seg.url, signal);
-      data = await decryptSegment(data, seg.key, parsed.mediaSequence + i, signal);
-      await writable.write(data);
-      bytes += data.length;
-      onStatus(`Segment ${i + 1}/${parsed.segments.length} (${YTDl.formatBytes(bytes)})`, '');
+      let data;
+      if (seg.range) {
+        // Coalesce consecutive ranges of the same file into one request
+        let end = seg.range.offset + seg.range.length;
+        let j = i + 1;
+        while (j < parsed.segments.length) {
+          const nxt = parsed.segments[j];
+          if (nxt.url !== seg.url || !nxt.range || nxt.range.offset !== end ||
+              end - seg.range.offset + nxt.range.length > RANGE_BATCH) break;
+          end += nxt.range.length;
+          j++;
+        }
+        const batch = { offset: seg.range.offset, length: end - seg.range.offset };
+        let buf = await YTDl.fetchBytes(seg.url, signal, rangeHeaders(batch));
+        // Server ignored Range and sent the whole file: slice absolute offsets
+        const fromStart = buf.length > batch.length;
+        let off = fromStart ? batch.offset : 0;
+        for (let k = i; k < j; k++) {
+          const len = parsed.segments[k].range.length;
+          let piece = buf.subarray(off, off + len);
+          off += len;
+          piece = await decryptSegment(piece, parsed.segments[k].key, parsed.mediaSequence + k, signal);
+          await writable.write(piece);
+          bytes += piece.length;
+        }
+        onStatus(`Segment ${j}/${parsed.segments.length} (${YTDl.formatBytes(bytes)})`, '');
+        i = j;
+      } else {
+        data = await YTDl.fetchBytes(seg.url, signal);
+        data = await decryptSegment(data, seg.key, parsed.mediaSequence + i, signal);
+        await writable.write(data);
+        bytes += data.length;
+        onStatus(`Segment ${i + 1}/${parsed.segments.length} (${YTDl.formatBytes(bytes)})`, '');
+        i++;
+      }
     }
     return bytes;
   }

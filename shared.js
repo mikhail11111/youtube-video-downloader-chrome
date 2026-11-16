@@ -137,16 +137,16 @@ const YTDl = {
   // Fetch media bytes. Direct fetch first (HLS/DASH CDNs usually send CORS
   // headers for hls.js/dash.js); on CORS/network failure fall back to the
   // background service worker, which fetches with host permissions.
-  async fetchBytes(url, signal) {
+  async fetchBytes(url, signal, headers) {
     try {
-      const response = await fetch(url, { credentials: 'include', signal: signal });
+      const response = await fetch(url, { credentials: 'include', signal: signal, headers: headers });
       if (!response.ok) throw new Error('HTTP ' + response.status);
       return new Uint8Array(await response.arrayBuffer());
     } catch (e) {
       if (e.name === 'AbortError') throw e;
       if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) throw e;
       const resp = await new Promise(resolve => {
-        chrome.runtime.sendMessage({ action: 'fetchProxy', url: url }, r => {
+        chrome.runtime.sendMessage({ action: 'fetchProxy', url: url, headers: headers }, r => {
           void chrome.runtime.lastError;
           resolve(r);
         });

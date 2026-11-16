@@ -144,7 +144,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return false;
   }
   if (request.action === 'fetchProxy') {
-    fetch(request.url, { credentials: 'include' }).then(async response => {
+    // Range is a forbidden header in page fetches but allowed here with
+    // host permissions (needed for byte-range HLS segments). Some CDNs
+    // (e.g. Vimeo) also require the page's Referer.
+    const headers = Object.assign({}, request.headers);
+    if (!headers.Referer && sender.tab && sender.tab.url) headers.Referer = sender.tab.url;
+    fetch(request.url, { credentials: 'include', headers: headers }).then(async response => {
       if (!response.ok) throw new Error('HTTP ' + response.status);
       const bytes = new Uint8Array(await response.arrayBuffer());
       sendResponse({ success: true, data: YTDl.bytesToBase64(bytes) });
