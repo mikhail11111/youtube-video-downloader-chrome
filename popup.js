@@ -1,7 +1,8 @@
-// YouTube Downloader - Popup Script
-// Supports rate-limited downloads to bypass YouTube throttling
-
-const DEFAULT_RATE_LIMIT = 500 * 1024; // 500 KB/s
+// Video Downloader - Popup Script
+// YouTube watch pages: InnerTube format list.
+// Other sites: media detected by network sniffing + DOM scan.
+// Downloads are delegated to the content script so they keep running
+// when the popup closes.
 
 document.addEventListener('DOMContentLoaded', async () => {
   const status = document.getElementById('status');
@@ -9,167 +10,198 @@ document.addEventListener('DOMContentLoaded', async () => {
   const videoTitle = document.getElementById('video-title');
   const videoFormats = document.getElementById('video-formats');
   const audioFormats = document.getElementById('audio-formats');
+  const detectedInfo = document.getElementById('detected-info');
+  const detectedList = document.getElementById('detected-list');
+  const rescanBtn = document.getElementById('rescan-btn');
   const loading = document.getElementById('loading');
+
+  function showStatus(msg, type) {
+    status.style.display = 'block';
+    status.textContent = msg;
+    status.className = 'status' + (type === 'success' ? ' success-msg' : type === 'error' ? ' error-msg' : '');
+  }
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-  if (!tab || !tab.url || !tab.url.includes('youtube.com/watch')) {
-    status.textContent = 'Navigate to a YouTube video page';
+  if (!tab || !tab.url || !/^https?:/i.test(tab.url)) {
+    showStatus('Open a page with a video to detect media', '');
     return;
   }
 
-  const videoId = new URL(tab.url).searchParams.get('v');
-  if (!videoId) {
-    status.textContent = 'No video ID found';
-    return;
-  }
+  const videoId = /youtube\.com\/watch/i.test(tab.url) ? new URL(tab.url).searchParams.get('v') : null;
 
-  status.style.display = 'none';
-  loading.style.display = 'block';
-
-  chrome.runtime.sendMessage({ action: 'getFormats', videoId: videoId }, (response) => {
-    loading.style.display = 'none';
-
-    if (!response || !response.success) {
-      status.style.display = 'block';
-      status.textContent = response ? response.error : 'Failed to load formats';
-      status.className = 'status error-msg';
-      return;
-    }
-
-    videoTitle.textContent = response.title;
-    videoInfo.style.display = 'block';
-
-    const formats = response.formats || [];
-    const videoFmt = formats.filter(f => f.mimeType && f.mimeType.includes('video'));
-    const audioFmt = formats.filter(f => f.mimeType && f.mimeType.includes('audio') && !f.mimeType.includes('video'));
-
-    const seenQ = new Set();
-    const uniqueVideo = [];
-    for (const f of videoFmt) {
-      const q = f.qualityLabel || f.quality;
-      if (!seenQ.has(q)) {
-        seenQ.add(q);
-        uniqueVideo.push(f);
-      }
-    }
-    uniqueVideo.sort((a, b) => {
-      const getRes = (f) => { const m = (f.qualityLabel || '').match(/(\d+)/); return m ? parseInt(m[1]) : 0; };
-      return getRes(b) - getRes(a);
-    });
-
-    audioFmt.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-
-    function formatBytes(bytes) {
-      if (!bytes) return '';
-      const sizes = ['B', 'KB', 'MB', 'GB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(1024));
-      return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + sizes[i];
-    }
-
-    function sanitizeFilename(name) {
-      return name.replace(/[<>:"/\\|?*]/g, '_').substring(0, 100);
-    }
-
-    function showStatus(msg, type) {
-      status.style.display = 'block';
-      status.textContent = msg;
-      status.className = 'status ' + (type === 'success' ? 'success-msg' : 'error-msg');
-    }
-
-    async function rateLimitedDownload(url, filename) {
-      try {
-        showStatus('Starting download...', '');
-
-        const response = await fetch(url, {
-          credentials: 'include',
-          headers: {
-            'Referer': 'https://www.youtube.com/',
-            'Origin': 'https://www.youtube.com',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          }
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const totalBytes = parseInt(response.headers.get('Content-Length') || '0');
-
-        const handle = await window.showSaveFilePicker({
-          suggestedName: filename,
-          types: [{ description: 'Media file', accept: { 'video/*': ['.mp4', '.webm', '.m4a', '.mp3'] } }]
-        });
-
-        const writable = await handle.createWritable();
-        const reader = response.body.getReader();
-        let downloadedBytes = 0;
-        const startTime = Date.now();
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          await writable.write(value);
-          downloadedBytes += value.length;
-
-          const delay = (value.length / DEFAULT_RATE_LIMIT) * 1000;
-          if (delay > 0) {
-            await new Promise(resolve => setTimeout(resolve, delay));
-          }
-
-          const progress = totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0;
-          const elapsed = (Date.now() - startTime) / 1000;
-          const speed = elapsed > 0 ? (downloadedBytes / elapsed / 1024).toFixed(0) + ' KB/s' : '';
-          showStatus(`Downloading... ${progress}% (${formatBytes(downloadedBytes)}${totalBytes ? '/' + formatBytes(totalBytes) : ''}) ${speed}`, '');
-        }
-
-        await writable.close();
-        showStatus(`Download complete! (${formatBytes(downloadedBytes)})`, 'success');
-      } catch (e) {
-        if (e.name === 'AbortError' || e.name === 'NotAllowedError') {
-          showStatus('Cancelled', '');
-        } else {
-          showStatus('Failed: ' + e.message, 'error');
-        }
-      }
-    }
-
-    function createBtn(format, title) {
-      const btn = document.createElement('button');
-      btn.className = 'format-btn';
-      const quality = format.qualityLabel || format.quality || 'Unknown';
-      const type = format.mimeType ? format.mimeType.split(';')[0].split('/')[1].toUpperCase() : '';
-      const size = format.contentLength ? formatBytes(parseInt(format.contentLength)) : '';
-      btn.innerHTML = `
-        <span class="format-label">${quality}</span>
-        <span class="format-type">${type}</span>
-        <span class="format-size">${size}</span>
-      `;
-      btn.addEventListener('click', async () => {
-        const isVideo = format.mimeType && format.mimeType.includes('video');
-        const isAudio = format.mimeType && format.mimeType.includes('audio');
-        const ext = isVideo ? 'mp4' : (isAudio ? 'm4a' : 'mp4');
-        const filename = sanitizeFilename(title) + '_' + quality + '.' + ext;
-        await rateLimitedDownload(format.url, filename);
+  if (videoId) {
+    loadYouTubeFormats(videoId);
+  } else {
+    rescanBtn.style.display = 'block';
+    rescanBtn.addEventListener('click', () => {
+      rescanBtn.disabled = true;
+      chrome.tabs.sendMessage(tab.id, { action: 'rescan' }, () => {
+        void chrome.runtime.lastError;
+        setTimeout(() => {
+          rescanBtn.disabled = false;
+          loadDetected();
+        }, 1600);
       });
-      return btn;
-    }
+    });
+    loadDetected();
+  }
 
-    if (uniqueVideo.length > 0) {
-      for (const f of uniqueVideo) {
-        videoFormats.appendChild(createBtn(f, response.title));
-      }
-    } else {
-      videoFormats.innerHTML = '<div class="error-msg">No video formats</div>';
-    }
+  // ---------------- Generic sites ----------------
 
-    if (audioFmt.length > 0) {
-      for (const f of audioFmt) {
-        audioFormats.appendChild(createBtn(f, response.title));
+  function loadDetected() {
+    status.style.display = 'none';
+    detectedInfo.style.display = 'none';
+    loading.style.display = 'block';
+
+    chrome.runtime.sendMessage({ action: 'getDetected', tabId: tab.id }, (response) => {
+      loading.style.display = 'none';
+      const items = (response && response.items) || [];
+      const hasStream = items.some(i => i.kind === 'hls' || i.kind === 'dash');
+      // Fragments are parts of a stream, never standalone downloads
+      const files = items.filter(i => i.kind !== 'segment');
+      const segments = items.filter(i => i.kind === 'segment');
+      const order = { hls: 0, dash: 1, file: 2 };
+      files.sort((a, b) => (order[a.kind] - order[b.kind]) || (b.ts - a.ts));
+
+      if (files.length === 0 && segments.length === 0) {
+        const hint = response && response.hasBlob
+          ? 'This page plays video via MSE. Press play, wait a few seconds, then rescan.'
+          : 'No media detected yet. Play the video, then rescan or reopen this popup.';
+        showStatus(hint, '');
+        return;
       }
-    } else {
-      audioFormats.innerHTML = '<div class="error-msg">No audio formats</div>';
-    }
-  });
+
+      detectedList.innerHTML = '';
+      for (const item of files) {
+        detectedList.appendChild(createMediaBtn(item));
+      }
+      if (segments.length > 0) {
+        const note = document.createElement('div');
+        note.className = 'fragment-note';
+        note.textContent = hasStream
+          ? segments.length + ' stream fragments belong to the playlist(s) above - download the playlist, not the fragments.'
+          : segments.length + ' stream fragments detected, but no playlist was captured. Reload the page, play the video from the start, then rescan.';
+        detectedList.appendChild(note);
+      }
+      detectedInfo.style.display = 'block';
+    });
+  }
+
+  function createMediaBtn(item) {
+    const btn = document.createElement('button');
+    btn.className = 'format-btn media-btn';
+
+    const badge = document.createElement('span');
+    badge.className = 'kind-badge kind-' + item.kind;
+    badge.textContent = item.kind === 'hls' ? 'HLS' : item.kind === 'dash' ? 'DASH' : item.kind === 'segment' ? 'SEG' : 'FILE';
+
+    const label = document.createElement('span');
+    label.className = 'format-label media-label';
+    let name = '';
+    try {
+      const u = new URL(item.url);
+      name = u.pathname.split('/').filter(Boolean).pop() || u.hostname;
+    } catch (e) { name = item.url; }
+    label.textContent = name.length > 40 ? name.substring(0, 37) + '...' : name;
+    label.title = item.url;
+
+    const meta = document.createElement('span');
+    meta.className = 'format-size';
+    let host = '';
+    try { host = new URL(item.url).hostname; } catch (e) {}
+    meta.textContent = (item.size ? YTDl.formatBytes(item.size) + ' - ' : '') + host;
+
+    btn.appendChild(badge);
+    btn.appendChild(label);
+    btn.appendChild(meta);
+
+    btn.addEventListener('click', () => {
+      chrome.tabs.sendMessage(tab.id, { action: 'downloadMedia', item: item }, (resp) => {
+        if (chrome.runtime.lastError || !resp || !resp.started) {
+          showStatus('Could not reach the page. Refresh the tab and try again.', 'error');
+          return;
+        }
+        showStatus('Confirm the save in the page panel. You can close this popup.', 'success');
+      });
+    });
+    return btn;
+  }
+
+  // ---------------- YouTube ----------------
+
+  function loadYouTubeFormats(videoId) {
+    status.style.display = 'none';
+    loading.style.display = 'block';
+
+    chrome.runtime.sendMessage({ action: 'getFormats', videoId: videoId }, (response) => {
+      loading.style.display = 'none';
+
+      if (!response || !response.success) {
+        showStatus(response ? response.error : 'Failed to load formats', 'error');
+        return;
+      }
+
+      videoTitle.textContent = response.title;
+      videoInfo.style.display = 'block';
+
+      const { video, audio } = YTDl.dedupeSort(response.formats);
+
+      function createBtn(format, title) {
+        const btn = document.createElement('button');
+        btn.className = 'format-btn';
+        const quality = format.qualityLabel || format.quality || 'Unknown';
+        const isVideo = YTDl.isVideoFormat(format);
+        const videoOnly = isVideo && !YTDl.hasAudio(format);
+        const size = format.contentLength ? YTDl.formatBytes(parseInt(format.contentLength)) : '';
+
+        // Build with textContent — format metadata must never be parsed as HTML
+        const label = document.createElement('span');
+        label.className = 'format-label';
+        label.textContent = quality;
+        const type = document.createElement('span');
+        type.className = 'format-type';
+        const codec = YTDl.codecLabel(format);
+        type.textContent = YTDl.mimeSubtype(format) + (codec ? ' · ' + codec : '') + (videoOnly ? ' · AUTO-MERGE' : '');
+        const sizeEl = document.createElement('span');
+        sizeEl.className = 'format-size';
+        sizeEl.textContent = size;
+        btn.appendChild(label);
+        btn.appendChild(type);
+        btn.appendChild(sizeEl);
+
+        if (videoOnly) {
+          btn.title = 'Video-only stream: the best audio track is downloaded and merged into one MP4 automatically.';
+        }
+
+        btn.addEventListener('click', () => {
+          // Run the download in the page's content script, not in this popup
+          chrome.tabs.sendMessage(tab.id, { action: 'downloadFormat', format: format, title: title }, (resp) => {
+            if (chrome.runtime.lastError || !resp || !resp.started) {
+              showStatus('Could not reach the page. Refresh the YouTube tab and try again.', 'error');
+              return;
+            }
+            showStatus('Confirm the save in the page panel. You can close this popup.', 'success');
+          });
+        });
+        return btn;
+      }
+
+      if (video.length > 0) {
+        for (const f of video) {
+          videoFormats.appendChild(createBtn(f, response.title));
+        }
+      } else {
+        videoFormats.innerHTML = '<div class="error-msg">No video formats</div>';
+      }
+
+      if (audio.length > 0) {
+        for (const f of audio) {
+          audioFormats.appendChild(createBtn(f, response.title));
+        }
+      } else {
+        audioFormats.innerHTML = '<div class="error-msg">No audio formats</div>';
+      }
+    });
+  }
 });

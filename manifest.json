@@ -1,28 +1,31 @@
 {
   "manifest_version": 3,
-  "name": "YouTube Video Downloader",
-  "version": "1.0.0",
-  "description": "Download YouTube videos in MP4 format with selectable quality",
+  "name": "Video Downloader",
+  "version": "1.2.0",
+  "description": "Download videos and audio from YouTube and other sites (MP4, WebM, HLS, DASH)",
   "permissions": [
     "activeTab",
-    "downloads",
+    "scripting",
+    "webRequest",
     "storage",
-    "scripting"
+    "offscreen"
   ],
   "host_permissions": [
-    "https://www.youtube.com/*",
-    "https://youtube.com/*",
-    "https://*.googlevideo.com/*"
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "background.js"
   },
+  "sandbox": {
+    "pages": ["sandbox.html"]
+  },
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*", "https://youtube.com/*"],
-      "js": ["content.js"],
+      "matches": ["<all_urls>"],
+      "js": ["shared.js", "stream.js", "content.js"],
       "css": ["content.css"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "action": {

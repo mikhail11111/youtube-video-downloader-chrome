@@ -2,16 +2,16 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>YouTube Downloader</title>
+  <title>Video Downloader</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <div class="popup-container">
     <div class="popup-header">
-      <h1>YouTube Downloader</h1>
+      <h1>Video Downloader</h1>
     </div>
     <div class="popup-body">
-      <div id="status" class="status">Navigate to a YouTube video page</div>
+      <div id="status" class="status">Open a page with a video to detect media</div>
       <div id="video-info" class="video-info" style="display:none;">
         <div class="video-title" id="video-title"></div>
         <div class="formats-section">
@@ -23,12 +23,20 @@
           <div id="audio-formats"></div>
         </div>
       </div>
+      <div id="detected-info" class="video-info" style="display:none;">
+        <div class="formats-section">
+          <h3>Detected media</h3>
+          <div id="detected-list"></div>
+        </div>
+      </div>
+      <button id="rescan-btn" class="rescan-btn" style="display:none;">Rescan page</button>
       <div id="loading" class="loading" style="display:none;">
         <div class="spinner"></div>
         <div>Loading formats...</div>
       </div>
     </div>
   </div>
+  <script src="shared.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

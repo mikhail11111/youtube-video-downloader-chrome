@@ -1,102 +1,102 @@
-# YouTube Video Downloader — Chrome Extension
+# Video Downloader — Chrome Extension
 
-A Chrome extension (Manifest V3) that adds a **Download** button to YouTube video pages, letting you download videos in multiple qualities and formats directly from your browser.
+A Chrome extension (Manifest V3) that detects and downloads videos and audio from **YouTube and other websites**. It sniffs media traffic on any site, lists what it finds in the toolbar popup, and downloads direct files, HLS (.m3u8) and DASH (.mpd) streams.
 
 ## Features
 
-- **Download button on YouTube** — appears next to Like/Share on any video page
-- **Quality selector** — choose from 144p, 240p, 360p, 480p, 720p, 1080p and more
-- **Audio-only downloads** — grab just the audio stream (M4A/Opus)
-- **Toolbar popup** — click the extension icon to browse formats without opening the in-page panel
-- **Rate-limited downloads** — downloads at ~500 KB/s to bypass YouTube's throttling, ensuring consistent full-speed downloads
-- **No external API** — extracts format URLs directly from YouTube's player response
-- **SPA-aware** — button re-injects automatically when navigating between videos
-- **Sanitized filenames** — uses the video title as the file name
+- **Single complete files** — separate video/audio tracks (YouTube adaptive, DASH, HLS audio renditions) are merged into one MP4 automatically with ffmpeg.wasm (stream copy, no quality loss)
+- **H.264 preferred** — always picks H.264 video / AAC audio when the source offers them (YouTube formats, HLS variants, DASH tracks); at equal quality the smallest file wins. The codec is shown on every entry
+- **Works on any site** — media requests are detected automatically while you browse; the toolbar badge shows how many were found
+- **Popup-first UI** — click the extension icon to see all detected media (streams first, then files) and pick what to download
+- **HLS support** — parses master/media playlists, quality selection, AES-128 decryption, segment merging (TS or fMP4 output)
+- **DASH support** — parses MPD manifests (SegmentTemplate/SegmentList/SegmentTimeline), picks the best video and audio tracks
+- **YouTube support** — dedicated Download button on video pages plus InnerTube-based format fetching (direct, unthrottled CDN URLs)
+- **Rate-limited direct downloads** — ~500 KB/s pacing with real-time progress and a cancel button
+- **Downloads survive the popup** — the actual download runs in the page, so closing the popup doesn't stop it
+- **SPA-aware** — YouTube button re-injects automatically when navigating between videos
+- **Sanitized filenames** — uses the page/video title as the file name
 
 ## Installation
 
-### From source (Developer Mode)
-
-1. Clone or download this repository:
-   ```bash
-   git clone https://github.com/mikhail11111/youtube-video-downloader-chrome.git
-   ```
-2. Open Chrome and go to `chrome://extensions/`
-3. Enable **Developer mode** (toggle in the top-right corner)
-4. Click **Load unpacked** and select the `youtube-video-downloader-chrome` folder
-5. The extension icon will appear in your toolbar
+1. Open Chrome and go to `chrome://extensions/`
+2. Enable **Developer mode** (toggle in the top-right corner)
+3. Click **Load unpacked** and select this folder
+4. The extension icon will appear in your toolbar
 
 ## Usage
 
-### In-page download button
+### Any site
+
+1. Open a page with a video and **press play** (streams are only requested during playback)
+2. Click the extension icon — the badge shows the number of detected media items
+3. Pick an entry: **HLS**/**DASH** streams are downloaded segment-by-segment and merged; **FILE** entries are plain media files
+4. Confirm the save in the page panel and choose a location
+5. If nothing is listed, click **Rescan page**
+
+### YouTube
 
 1. Open any YouTube video
-2. Click the red **Download** button that appears near the video controls
-3. A panel opens showing all available video and audio formats
-4. Click any format to start the download
-
-### Toolbar popup
-
-1. Click the extension icon in the Chrome toolbar
-2. If you're on a YouTube video page, formats load automatically
-3. Click any format button to download
+2. Click the red **Download** button near the video controls, or use the toolbar popup
+3. Pick a quality (video-only streams are marked **NO AUDIO**), confirm, and save
 
 ## How it works
 
-The extension injects a content script into YouTube pages that:
+1. **Background service worker**
+   - Observes network requests (`chrome.webRequest`) on all sites and classifies media by URL extension and response Content-Type; detections are kept per tab in `chrome.storage.session`
+   - Fetches YouTube formats from the InnerTube API (ANDROID/IOS/WEB clients return direct URLs without signature ciphers or throttled `n` parameters)
+   - Proxies media fetches for content scripts blocked by CORS
+2. **Content script** (all sites, all frames)
+   - Scans `<video>`/`<audio>` elements for direct sources
+   - Top frame: runs the download panel and the actual download (File System Access API), so it survives popup closure
+3. **Stream engine** (`stream.js`)
+   - HLS: master playlist variant selection, media playlist parsing, AES-128 key handling, init + segment concatenation
+   - DASH: MPD parsing, best-track selection, segment URL generation, init + segment concatenation
+4. **Popup** — lists detected media (or YouTube formats) and delegates downloads to the content script
+5. **Merger** (`offscreen.html` + `sandbox.html`)
+   - An offscreen document hosts a sandboxed iframe (the only MV3 context allowed to load remote scripts) running ffmpeg.wasm from a CDN
+   - Tracks are transferred in 3 MB chunks, merged with `-c copy` (no re-encoding), and the single MP4 is streamed back to the page for saving
 
-1. Reads `ytInitialPlayerResponse` from the page's JavaScript
-2. Extracts `streamingData.formats` and `streamingData.adaptiveFormats`
-3. Displays them in a panel or popup
-4. Downloads using **rate-limited fetch** (~500 KB/s) to bypass YouTube's throttle detection
-
-### Why rate limiting?
-
-YouTube detects fast downloads and throttles them to ~100 KB/s after the first few seconds. By limiting the download speed to ~500 KB/s, the extension stays below YouTube's detection threshold, resulting in consistent full-speed downloads without throttling.
-
-The rate limiter works by:
-- Fetching the file as a `ReadableStream`
-- Reading chunks and writing them to disk via the File System Access API
-- Adding small delays between chunks to maintain the target speed
-- Showing real-time progress (percentage, bytes, speed)
+Each saved file starts with an in-page click, because the save dialog (`showSaveFilePicker`) requires a user gesture in the page itself.
 
 ## File structure
 
 ```
-youtube-video-downloader-chrome/
 ├── manifest.json       # Extension manifest (Manifest V3)
-├── content.js          # In-page download button + format panel
+├── shared.js           # Helpers: classification, fetch proxy, filenames
+├── stream.js           # HLS + DASH parsing and segmented download engine
+├── content.js          # DOM scanning, download panel + downloader
 ├── content.css         # Panel styling
-├── background.js       # Service worker: downloads + format fetching
+├── background.js       # Service worker: sniffing, InnerTube, CORS proxy, merge routing
+├── offscreen.html      # Offscreen document hosting the merger iframe
+├── offscreen.js        # Message bridge: extension <-> sandbox
+├── sandbox.html        # Sandboxed page (allows ffmpeg.wasm from CDN)
+├── sandbox.js          # ffmpeg.wasm merge worker
 ├── popup.html          # Toolbar popup UI
 ├── popup.js            # Popup logic
 ├── popup.css           # Popup styling
 └── icons/
-    ├── icon16.png
-    ├── icon48.png
-    └── icon128.png
 ```
 
 ## Limitations
 
-- **SABR streaming** — YouTube may block some high-resolution formats via SABR; if a format fails, try a lower quality
-- **Separate streams** — video and audio are separate streams; for a merged MP4, download both and combine with [ffmpeg](https://ffmpeg.org/):
-  ```bash
-  ffmpeg -i video.mp4 -i audio.m4a -c copy output.mp4
-  ```
-- **Large files** — the File System Access API (`showSaveFilePicker`) is used for saving; this requires Chrome 86+ and a secure context (HTTPS)
-- **Unlisted/private videos** — may have download restrictions depending on the video's privacy settings
-- **Rate limiting** — YouTube may throttle downloads at full speed; the extension relies on Chrome's native download manager
+- **No transcoding** — the extension picks H.264 sources when available but cannot re-encode other codecs; if a site only offers VP9/AV1/H.265, that is what gets saved (labeled in the UI). Convert afterwards with `ffmpeg -i in.webm -c:v libx264 -crf 23 -c:a aac out.mp4`
+- **First merge needs internet** — ffmpeg.wasm (~31 MB) is loaded once from unpkg.com when the first merge runs; it stays cached for the browser session. Very large videos are held in memory during merging
+- **DRM** — Widevine/PlayReady/FairPlay-protected streams (Netflix, Spotify, etc.) cannot be downloaded; they are reported as unsupported
+- **MSE/blob players** — sites that hide the stream behind `blob:` URLs are covered only if the underlying segments/manifests are visible in network traffic; press play first
+- **TS output** — muxed HLS streams with MPEG-TS segments are saved as `.ts` (playable in VLC etc.); remux with `ffmpeg -i in.ts -c copy out.mp4` if needed
+- **SABR (YouTube)** — YouTube may block some high-resolution formats; if a format fails, try a lower quality
+- **Browser support** — the File System Access API requires Chrome 86+ (desktop)
 
 ## Permissions
 
 | Permission | Reason |
 |---|---|
-| `activeTab` | Read the current YouTube page |
-| `downloads` | Trigger file downloads via Chrome's download manager |
-| `storage` | Store user preferences (future use) |
-| `scripting` | Inject content scripts into YouTube pages |
-| `host_permissions` | Access YouTube and Google Video CDN URLs |
+| `activeTab` | Read the current page |
+| `scripting` | Read YouTube's live player response (MAIN world) as a fallback |
+| `webRequest` | Detect media requests (read-only observation, no blocking) |
+| `storage` | Keep per-tab detections across service worker restarts |
+| `offscreen` | Host the ffmpeg.wasm merger in an offscreen document |
+| `host_permissions: <all_urls>` | Detect and fetch media from any site |
 
 ## License
 
@@ -104,4 +104,4 @@ MIT
 
 ## Disclaimer
 
-This extension is for personal use. Respect YouTube's Terms of Service and copyright laws. Only download content you have the right to download.
+This extension is for personal use. Respect websites' Terms of Service and copyright laws. Only download content you have the right to download.
