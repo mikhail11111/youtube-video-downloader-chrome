@@ -107,9 +107,27 @@ chrome.tabs.onRemoved.addListener(tabId => clearTab(tabId));
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getFormats') {
-    fetchVideoFormats(request.videoId)
-      .then(sendResponse)
-      .catch(err => sendResponse({ success: false, error: err.message }));
+    (async () => {
+      const result = await fetchVideoFormats(request.videoId);
+      if (result.success) {
+        // InnerTube URLs often 403 (no fresh n-transform / PO token).
+        // Override them with the URLs the page's own player resolved.
+        const pr = await getTabPagePlayerResponse(sender.tab && sender.tab.id);
+        if (pr.success && pr.playerResponse && pr.playerResponse.streamingData) {
+          const all = [
+            ...(pr.playerResponse.streamingData.formats || []),
+            ...(pr.playerResponse.streamingData.adaptiveFormats || [])
+          ];
+          const byItag = new Map();
+          for (const f of all) if (f.url) byItag.set(String(f.itag), f.url);
+          for (const f of result.formats) {
+            const live = byItag.get(String(f.itag));
+            if (live) f.url = live;
+          }
+        }
+      }
+      sendResponse(result);
+    })().catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
   if (request.action === 'getPlayerResponse') {
@@ -117,6 +135,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .then(sendResponse)
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
+  }
+  if (request.action === 'getCapturedUrl') {
+    // Return a real, fully-signed media URL sniffed from the page's own
+    // network requests. InnerTube URLs can 403 (missing n-transform / PO
+    // token); the player's own videoplayback request is always valid.
+    const tabId = sender.tab && sender.tab.id;
+    const list = tabMedia.get(tabId) || [];
+    const itag = String(request.itag || '');
+    let match = null;
+    if (itag) {
+      match = list.find(x => {
+        try { return new URL(x.url).searchParams.get('itag') === itag; } catch (e) { return false; }
+      });
+    }
+    if (!match) {
+      match = list.filter(x => x.url.includes('videoplayback')).sort((a, b) => b.ts - a.ts)[0];
+    }
+    const fresh = match && (Date.now() - match.ts < 30 * 60 * 1000);
+    sendResponse({ url: fresh ? match.url : null });
+    return false;
   }
   if (request.action === 'getDetected') {
     ready.then(() => {

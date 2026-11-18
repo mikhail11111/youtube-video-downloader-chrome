@@ -11,6 +11,7 @@ A Chrome extension (Manifest V3) that detects and downloads videos and audio fro
 - **HLS support** — parses master/media playlists, quality selection, AES-128 decryption, segment merging (TS or fMP4 output)
 - **DASH support** — parses MPD manifests (SegmentTemplate/SegmentList/SegmentTimeline), picks the best video and audio tracks
 - **YouTube support** — dedicated Download button on video pages plus InnerTube-based format fetching (direct, unthrottled CDN URLs)
+- **HTTP 403 recovery** — if a YouTube CDN URL is rejected, the download automatically retries with the fully-signed URL the page's own player requested (captured via `webRequest`) or a fresh player-response URL
 - **Rate-limited direct downloads** — ~500 KB/s pacing with real-time progress and a cancel button
 - **Downloads survive the popup** — the actual download runs in the page, so closing the popup doesn't stop it
 - **SPA-aware** — YouTube button re-injects automatically when navigating between videos
@@ -43,7 +44,8 @@ A Chrome extension (Manifest V3) that detects and downloads videos and audio fro
 
 1. **Background service worker**
    - Observes network requests (`chrome.webRequest`) on all sites and classifies media by URL extension and response Content-Type; detections are kept per tab in `chrome.storage.session`
-   - Fetches YouTube formats from the InnerTube API (ANDROID/IOS/WEB clients return direct URLs without signature ciphers or throttled `n` parameters)
+   - Fetches YouTube formats from the InnerTube API (ANDROID/IOS/WEB clients) and overrides their URLs with the fully-signed URLs from the page's own player response when available, avoiding HTTP 403
+   - Keeps a per-tab list of real media requests (e.g. `videoplayback`) so a rejected URL can be swapped for the one the player actually used
    - Proxies media fetches for content scripts blocked by CORS
 2. **Content script** (all sites, all frames)
    - Scans `<video>`/`<audio>` elements for direct sources

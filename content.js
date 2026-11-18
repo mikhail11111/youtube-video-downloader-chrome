@@ -195,7 +195,7 @@
 
   // Rate-limited fetch into memory (for tracks that will be merged)
   async function downloadToMemory(url, signal, label) {
-    const response = await fetch(url, { credentials: 'include', signal: signal });
+    const response = await fetchWith403Fallback(url, signal);
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     const totalBytes = parseInt(response.headers.get('Content-Length')) || 0;
     const reader = response.body.getReader();
@@ -265,6 +265,42 @@
 
   // ---------------- Direct-file download ----------------
 
+  // InnerTube URLs can return 403 because they lack the freshly-resolved
+  // n-parameter / PO token. Retry with a URL the page's own player actually
+  // requested (sniffed via webRequest) and with a fresh player-response URL.
+  async function fetchWith403Fallback(url, signal) {
+    let response = await fetch(url, { credentials: 'include', signal: signal });
+    if (response.status !== 403) return response;
+
+    const itag = (() => { try { return new URL(url).searchParams.get('itag'); } catch (e) { return null; } })();
+    const candidates = [];
+
+    // 1) Real URL captured from the player's network traffic
+    if (itag) {
+      const captured = await sendMessage({ action: 'getCapturedUrl', itag: itag });
+      if (captured && captured.url && captured.url !== url) candidates.push(captured.url);
+    }
+
+    // 2) Fresh URL from the page's live player response
+    const pr = await sendMessage({ action: 'getPlayerResponse' });
+    if (pr && pr.success && pr.playerResponse && pr.playerResponse.streamingData) {
+      const all = [
+        ...(pr.playerResponse.streamingData.formats || []),
+        ...(pr.playerResponse.streamingData.adaptiveFormats || [])
+      ];
+      const match = itag ? all.find(f => String(f.itag) === String(itag)) : null;
+      if (match && match.url && match.url !== url) candidates.push(match.url);
+    }
+
+    for (const candidate of candidates) {
+      try {
+        const retry = await fetch(candidate, { credentials: 'include', signal: signal });
+        if (retry.ok) return retry;
+      } catch (e) {}
+    }
+    return response; // all retries failed — caller reports HTTP 403
+  }
+
   // Rate-limited download using fetch + ReadableStream + File System Access API
   async function rateLimitedDownload(url, filename, rateLimit) {
     if (downloadController) {
@@ -290,7 +326,7 @@
       setStatus('Starting download...', '');
       setCancelVisible(true);
 
-      const response = await fetch(url, { credentials: 'include', signal: signal });
+      const response = await fetchWith403Fallback(url, signal);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
